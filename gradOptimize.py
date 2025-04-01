@@ -4,7 +4,7 @@ import copy
 import random
 import numpy as np
 from coolBNet import load_graph, create_base_probabilities, load_combined_data, build_network, calculate_probabilities, save_results
-from dbCode import ComputeObjectF, DB_SIDE_E, CONVERT_RATE
+
 
 class ProbabilityOptimizer:
     def __init__(self, graph_file, db_path):
@@ -18,15 +18,48 @@ class ProbabilityOptimizer:
         with open('merged_graph_fozinopril_ramipril_Tables.json') as f:
             drug_table_data = json.load(f)
             
-        self.compute_obj = ComputeObjectF(
-            drug_table_data,  # Передаем загруженные табличные данные
-            self.graph,
-            DB_SIDE_E
-        )
+        self.side_effect_dataset = self._get_side_effect_freq_dataset()
         
         # Собираем информацию о графе
         self._prepare_graph_info()
-        
+
+     def _get_side_effect_freq_dataset(self):
+        """
+        Получает датасет побочных эффектов для каждого ЛС из БД.
+        Возвращает словарь: ключ - название препарата (нижний регистр), значение - список побочных эффектов.
+        """
+        side_effect_dict = {}
+        drugs = set([t[1] for t in self.drug_list])
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            # Подготавливаем список плейсхолдеров для оператора IN
+            placeholders = ','.join('?' for _ in drugs)
+            query = f"""
+                SELECT d.drug, se.effect, dse.frequency
+                FROM drug_side_effects dse
+                JOIN drugs d ON dse.drug_id = d.id
+                JOIN side_effects se ON dse.side_effect_id = se.id
+                WHERE d.drug IN ({placeholders})
+            """
+            cur.execute(query, tuple(drugs))
+            for drug, effect, frequency in cur.fetchall():
+                drug_lower = drug.lower()
+                if drug_lower not in side_effect_dict:
+                    side_effect_dict[drug_lower] = {}
+                side_effect_dict[drug_lower][effect] = frequency
+        except Exception as e:
+            logger.error("Ошибка при выполнении SQL-запроса: %s", e)
+        finally:
+            if conn:
+                conn.close()
+
+        missing = drugs - set(side_effect_dict.keys())
+        if missing:
+            logger.error("Датасеты не найдены для препаратов: %s", ", ".join(missing))
+        return side_effect_dict
+        # name --- prob
+
     def _prepare_graph_info(self):
         """Собирает информацию о связях между узлами"""
         self.node_map = {n['id']: n for n in self.graph['nodes']}
@@ -142,7 +175,7 @@ class ProbabilityOptimizer:
 if __name__ == "__main__":
     # Инициализация оптимизатора
     optimizer = ProbabilityOptimizer(
-        graph_file='fozinopril_ramipril_Parse.json',
+        graph_file='merged_graph_fozinopril_ramipril_Parse.json',
         db_path=DB_SIDE_E
     )
     

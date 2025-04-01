@@ -244,64 +244,88 @@ def get_conditional_probability(network, node_id, parent_states):
         raise ValueError(f"Узел {node_id} не найден")
     return node.get_probability(parent_states)
 
-
-# # Изменить функцию save_results
-# def save_results(probs, network, graph_data, filename='results.json'):
-#     parent_map = defaultdict(list)
-#     for link in graph_data['links']:
-#         parent_map[link['target']].append(link['source'])
-    
-#     results = []
-#     for node_id, prob in probs.items():
-#         node_info = next(n for n in graph_data['nodes'] if n['id'] == node_id)
-#         results.append({
-#             'id': node_id,
-#             'name': network[node_id].name,
-#             'probability': round(prob, 4)
-#         })
-    
-#     with open(filename, 'w', encoding='utf-8') as f:
-#         json.dump(results, f, indent=4, ensure_ascii=False)
         
-def save_results(probs, network, graph_data, filename='results.json'):
-    parent_map = defaultdict(list)
+def save_results(final_probs, graph_data, filename="results.json"):
+    grouped_data = {}
+    
+    # Строим вспомогательные структуры данных
+    id_to_node = {n['id']: n for n in graph_data['nodes']}
+    child_map = defaultdict(list)
+    
+    # Важно: убедимся в правильном направлении связей
     for link in graph_data['links']:
-        parent_map[link['target']].append(link['source'])
-    
-    def get_ancestors(node_id):
-        ancestors = set()
-        def dfs(current_id):
-            for parent in parent_map.get(current_id, []):
-                if parent not in ancestors:
-                    ancestors.add(parent)
-                    dfs(parent)
-        dfs(node_id)
-        return ancestors
-    
-    results = []
-    for node_id, prob in probs.items():
-        node_info = next(n for n in graph_data['nodes'] if n['id'] == node_id)
-        entry = {
-            'id': node_id,
-            'name': network[node_id].name,
-            'probability': round(prob, 4)
-        }
-        if node_info.get('label') == 'side_e':
-            ancestors = get_ancestors(node_id)
-            entry['ancestors'] = [network[anc].name for anc in ancestors]
-        results.append(entry)
-    
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=4, ensure_ascii=False)
+        source = link['source']
+        target = link['target']
+        child_map[source].append(target)  # source -> target (родитель -> ребенок)
 
-# В конец coolBNet.py
-def get_graph_data():
-    with open('fozinopril_ramipril_Parse.json') as f:
-        return json.load(f)
+    # Отладочная информация
+    debug_info = {
+        'all_prepare_nodes': [],
+        'found_side_effects': defaultdict(list)
+    }
+
+    # Обрабатываем все препараты
+    for node in graph_data['nodes']:
+        if node.get('label') == 'prepare':
+            drug_id = node['id']
+            drug_name = node['name']
+            debug_info['all_prepare_nodes'].append(drug_id)
+
+            # Собираем информацию о препарате
+            drug_entry = {
+                "drug_id": drug_id,
+                "drug_name_en": node.get('name_en', drug_name),
+                "side_effects": {}
+            }
+
+            # Модифицированная функция сбора эффектов
+            def collect_effects(parent_id, path=[]):
+                effects = {}
+                for child_id in child_map.get(parent_id, []):
+                    if child_id not in id_to_node:
+                        print(f"⚠️ Не найден узел с ID: {child_id}")
+                        continue
+
+                    child = id_to_node[child_id]
+                    child_name = child.get('name', 'unnamed')
+                    
+                    # Записываем путь для отладки
+                    current_path = path + [f"{child_name} ({child_id})"]
+                    
+                    # Если узел помечен как побочный эффект (можем менять условие)
+                    if child.get('label') in ['side_effect', 'side_e', 'effect']:
+                        prob = round(float(final_probs.get(child_id, 0.0)), 4)
+                        effects[child_name] = {
+                            "id": child_id,
+                            "probability": prob,
+                            "path": " → ".join(current_path)  # Для отладки
+                        }
+                        debug_info['found_side_effects'][drug_id].append(child_id)
+                    # Продолжаем обход графа
+                    else:
+                        nested = collect_effects(child_id, current_path)
+                        effects.update(nested)
+                return effects
+
+            # Собираем все эффекты
+            drug_entry["side_effects"] = collect_effects(drug_id, [f"{drug_name} ({drug_id})"])
+            
+            # Добавляем в результат
+            grouped_data[drug_name] = drug_entry
+
+    # Сохраняем результат
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(grouped_data, f, ensure_ascii=False, indent=4)
+
+    # Сохраняем отладочную информацию
+    with open('debug_info.json', 'w', encoding='utf-8') as f:
+        json.dump(debug_info, f, ensure_ascii=False, indent=4)
+
+    print("Сохранение завершено. Проверьте debug_info.json для анализа структуры графа")
 
 if __name__ == "__main__":
     # Загрузка графа
-    with open('fozinopril_ramipril_Parse.json') as f:
+    with open('merged_graph_fozinopril_ramipril_Parse.json') as f:
         graph = json.load(f)
     
     # Шаг 1: Создать базовые вероятности
@@ -318,6 +342,6 @@ if __name__ == "__main__":
     final_probs = calculate_probabilities(network)
     
     # Сохранение результатов
-    save_results(final_probs, network, graph)
+    save_results(final_probs, graph, "results.json")
     
     print("Расчеты успешно завершены. Результаты в results.json")

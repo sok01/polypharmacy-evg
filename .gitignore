@@ -2,3 +2,4 @@ bEnv/
 __pycache__/
 lib/
 .DS_Store
+dbCode.py
